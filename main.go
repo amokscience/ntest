@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -17,9 +16,6 @@ import (
 
 	"github.com/rs/cors"
 )
-
-//go:embed all:frontend/build
-var frontendFiles embed.FS
 
 type TestRequest struct {
 	Target   string `json:"target"`
@@ -39,11 +35,21 @@ type TestResponse struct {
 	Results []TestResult `json:"results"`
 }
 
+type NetworkInterface struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	IPAddress  string `json:"ipAddress"`
+	SubnetMask string `json:"subnetMask"`
+	MACAddress string `json:"macAddress"`
+}
+
 type SystemInfo struct {
-	Hostname   string   `json:"hostname"`
-	HostIPs    []string `json:"hostIps"`
-	DNSServers []string `json:"dnsServers"`
-	GatewayIPs []string `json:"gatewayIps"`
+	Hostname          string             `json:"hostname"`
+	OS                string             `json:"os"`
+	HostIPs           []string           `json:"hostIps"`
+	DNSServers        []string           `json:"dnsServers"`
+	GatewayIPs        []string           `json:"gatewayIps"`
+	NetworkInterfaces []NetworkInterface `json:"networkInterfaces"`
 }
 
 func main() {
@@ -56,17 +62,11 @@ func main() {
 	mux.HandleFunc("/api/sysinfo", handleSysInfo)
 	mux.HandleFunc("/api/health", handleHealth)
 
-	// Serve embedded frontend files
-	frontendFS, err := fs.Sub(frontendFiles, "frontend/build")
-	if err != nil {
-		log.Printf("Warning: Could not load frontend files: %v", err)
-		log.Println("Running in API-only mode. Build frontend first with: cd frontend && npm run build")
-	} else {
-		// Serve static files
-		fileServer := http.FileServer(http.FS(frontendFS))
-		mux.Handle("/", fileServer)
-		log.Println("Serving frontend from embedded files")
-	}
+	// Serve static assets and CSS from frontend build output
+	mux.Handle("/static/", http.FileServer(http.Dir("frontend/build")))
+	// Serve index.html for all other routes (SPA fallback)
+	mux.HandleFunc("/", spaHandler)
+	log.Println("Serving frontend from frontend/build directory")
 
 	// Enable CORS for API endpoints
 	handler := cors.New(cors.Options{
@@ -87,12 +87,25 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 }
 
+func spaHandler(w http.ResponseWriter, r *http.Request) {
+	// Serve index.html for all routes (React Router handles client-side routing)
+	data, err := ioutil.ReadFile("frontend/build/index.html")
+	if err != nil {
+		http.Error(w, "index.html not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(data)
+}
+
 func handleSysInfo(w http.ResponseWriter, r *http.Request) {
 	sysInfo := SystemInfo{
-		Hostname:   getHostname(),
-		HostIPs:    getHostIPs(),
-		DNSServers: getDNSServers(),
-		GatewayIPs: getGatewayIPs(),
+		Hostname:          getHostname(),
+		OS:                getOSVersion(),
+		HostIPs:           getHostIPs(),
+		DNSServers:        getDNSServers(),
+		GatewayIPs:        getGatewayIPs(),
+		NetworkInterfaces: getNetworkInterfaces(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -504,6 +517,7 @@ func getHostIPs() []string {
 
 func getDNSServers() []string {
 	var dnsServers []string
+	seen := make(map[string]bool)
 
 	if runtime.GOOS == "windows" {
 		// Windows: Use ipconfig /all
@@ -514,8 +528,9 @@ func getDNSServers() []string {
 			lines := strings.Split(string(output), "\n")
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
-				if line != "" && net.ParseIP(line) != nil {
+				if line != "" && net.ParseIP(line) != nil && !seen[line] {
 					dnsServers = append(dnsServers, line)
+					seen[line] = true
 				}
 			}
 		}
@@ -529,7 +544,11 @@ func getDNSServers() []string {
 				if strings.HasPrefix(line, "nameserver") {
 					parts := strings.Fields(line)
 					if len(parts) >= 2 {
-						dnsServers = append(dnsServers, parts[1])
+						dns := parts[1]
+						if !seen[dns] {
+							dnsServers = append(dnsServers, dns)
+							seen[dns] = true
+						}
 					}
 				}
 			}
@@ -547,47 +566,58 @@ func getGatewayIPs() []string {
 	var gateways []string
 
 	if runtime.GOOS == "windows" {
-		// Windows: Use ipconfig
-		cmd := exec.Command("powershell", "-Command",
-			"Get-NetRoute -DestinationPrefix '0.0.0.0/0','::/ 0' | Select-Object -ExpandProperty NextHop")
+		// Windows: Use ipconfig and parse "Default Gateway" entries
+		cmd := exec.Command("ipconfig")
 		output, err := cmd.Output()
 		if err == nil {
 			lines := strings.Split(string(output), "\n")
 			seen := make(map[string]bool)
 			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line != "" && net.ParseIP(line) != nil && !seen[line] {
-					gateways = append(gateways, line)
-					seen[line] = true
+				if strings.Contains(line, "Default Gateway") {
+					// Extract IP from lines like "Default Gateway . . . . . . . . . : 192.168.1.1"
+					parts := strings.Split(line, ":")
+					if len(parts) >= 2 {
+						ip := strings.TrimSpace(parts[len(parts)-1])
+						if ip != "" && net.ParseIP(ip) != nil && !seen[ip] {
+							gateways = append(gateways, ip)
+							seen[ip] = true
+						}
+					}
 				}
 			}
 		}
 	} else {
-		// Linux: Use ip route or route -n
-		cmd := exec.Command("sh", "-c", "ip route | grep default | awk '{print $3}' || route -n | grep '^0.0.0.0' | awk '{print $2}'")
+		// Linux/macOS: Use ip route for IPv4
+		cmd := exec.Command("sh", "-c", "ip route | grep default | awk '{print $3}'")
 		output, err := cmd.Output()
+		seen := make(map[string]bool)
 		if err == nil {
 			outputStr := strings.TrimSpace(string(output))
 			if outputStr != "" {
 				lines := strings.Split(outputStr, "\n")
 				for _, line := range lines {
 					line = strings.TrimSpace(line)
-					if net.ParseIP(line) != nil {
+					if line != "" && net.ParseIP(line) != nil && !seen[line] {
 						gateways = append(gateways, line)
+						seen[line] = true
 					}
 				}
 			}
 		}
 
-		// Also try for IPv6
+		// Try for IPv6 default routes
 		cmd = exec.Command("sh", "-c", "ip -6 route | grep default | awk '{print $3}'")
 		output, err = cmd.Output()
 		if err == nil {
-			lines := strings.Split(string(output), "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line != "" && net.ParseIP(line) != nil {
-					gateways = append(gateways, line)
+			outputStr := strings.TrimSpace(string(output))
+			if outputStr != "" {
+				lines := strings.Split(outputStr, "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line != "" && net.ParseIP(line) != nil && !seen[line] {
+						gateways = append(gateways, line)
+						seen[line] = true
+					}
 				}
 			}
 		}
@@ -598,4 +628,90 @@ func getGatewayIPs() []string {
 	}
 
 	return gateways
+}
+func getOSVersion() string {
+	if runtime.GOOS == "windows" {
+		// Windows: Get OS version from PowerShell
+		cmd := exec.Command("powershell", "-Command",
+			"(Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows NT\\CurrentVersion' -Name ProductName).ProductName + ' ' + (Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows NT\\CurrentVersion' -Name CurrentVersion).CurrentVersion")
+		output, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(output))
+		}
+	} else {
+		// Linux/macOS: Try to get from /etc/os-release or uname
+		cmd := exec.Command("sh", "-c", "cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'=' -f2 | tr -d '\"' || uname -s")
+		output, err := cmd.Output()
+		if err == nil {
+			osInfo := strings.TrimSpace(string(output))
+			if osInfo != "" {
+				return osInfo
+			}
+		}
+	}
+	return fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH)
+}
+
+func getNetworkInterfaces() []NetworkInterface {
+	var interfaces []NetworkInterface
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return interfaces
+	}
+
+	for _, iface := range ifaces {
+		// Skip loopback interfaces
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		status := "Down"
+		if iface.Flags&net.FlagUp != 0 {
+			status = "Up"
+		}
+
+		// Get IP addresses and subnet mask for this interface
+		addrs, err := iface.Addrs()
+		if err != nil || len(addrs) == 0 {
+			continue
+		}
+
+		// Take the first non-loopback IPv4 address
+		for _, addr := range addrs {
+			var ip net.IP
+			var subnet *net.IPNet
+
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+				subnet = v
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+
+			// Only include IPv4 for interface list, IPv6 is shown in host IPs
+			if ip.To4() != nil {
+				subnetMask := ""
+				if subnet != nil {
+					subnetMask = subnet.Mask.String()
+				}
+
+				interfaces = append(interfaces, NetworkInterface{
+					Name:       iface.Name,
+					Status:     status,
+					IPAddress:  ip.String(),
+					SubnetMask: subnetMask,
+					MACAddress: iface.HardwareAddr.String(),
+				})
+				break // Only one IPv4 per interface in the list
+			}
+		}
+	}
+
+	return interfaces
 }
