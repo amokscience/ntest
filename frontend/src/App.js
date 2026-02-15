@@ -15,6 +15,8 @@ function App() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [systemInfo, setSystemInfo] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [dnsResult, setDnsResult] = useState(null);
+  const [dnsLoading, setDnsLoading] = useState(false);
 
   // Use relative URL when embedded, or environment variable for development
   const API_URL = process.env.REACT_APP_API_URL || '';
@@ -123,7 +125,7 @@ function App() {
 
     setTracerouting(true);
     setError('');
-    setTracerouteResult('Running traceroute...');
+    setTracerouteResult('Starting traceroute...\n');
 
     try {
       const response = await fetch(`${API_URL}/api/traceroute`, {
@@ -153,7 +155,15 @@ function App() {
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = JSON.parse(line.slice(6));
-            setTracerouteResult(data.message);
+            
+            if (data.type === 'line') {
+              // Append each line as it arrives
+              setTracerouteResult(prev => prev + data.text + '\n');
+            } else if (data.type === 'complete') {
+              // Add completion message
+              setTracerouteResult(prev => prev + '\n' + data.message);
+              setTracerouting(false);
+            }
           }
         }
       }
@@ -165,10 +175,63 @@ function App() {
     }
   };
 
+  const isHostname = (str) => {
+    // Check if string is NOT an IP address
+    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
+    return !ipv4Regex.test(str) && !ipv6Regex.test(str) && str.length > 0;
+  };
+
+  const handleDNSLookup = async () => {
+    if (!target) {
+      setError('Please enter a hostname');
+      return;
+    }
+
+    if (!isHostname(target)) {
+      setError('DNS lookup only works with hostnames, not IP addresses');
+      return;
+    }
+
+    setDnsLoading(true);
+    setError('');
+    setDnsResult(null);
+
+    try {
+      const response = await fetch(`${API_URL}/api/dns`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          hostname: target
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('DNS lookup failed');
+      }
+
+      const data = await response.json();
+      setDnsResult(data);
+    } catch (err) {
+      setError(err.message || 'DNS lookup failed');
+    } finally {
+      setDnsLoading(false);
+    }
+  };
+
   const handleKeyPress = (e) => {
     if (e.key === 'Enter') {
       handleTest();
     }
+  };
+
+  const handleClear = () => {
+    setResults([]);
+    setTracerouteResult('');
+    setDnsResult(null);
+    setError('');
   };
 
   return (
@@ -181,7 +244,7 @@ function App() {
       )}
 
       <div className="container-fluid">
-        <div className="row pt-2">
+        <div className="row pt-1">
           {/* Left Column: System Info Panel */}
           <div className="col-lg-3 mb-4">
             {systemInfo && (
@@ -328,40 +391,66 @@ function App() {
                   </div>
                 </div>
 
-                <button
-                  className="btn btn-primary w-100 mb-3"
-                  onClick={handleTest}
-                  disabled={testing || tracerouting}
-                >
-                  {testing ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                      Testing...
-                    </>
-                  ) : (
-                    'Test Connection'
-                  )}
-                </button>
-
-                {/* Traceroute Section */}
-                <div className="card mb-3">
-                  <div className="card-header">
-                    <div className="d-flex justify-content-between align-items-center">
-                      <h5 className="mb-0">🔍 Traceroute</h5>
+                <div className="mb-3">
+                  <div className="row g-2">
+                    <div className="col-md-3">
                       <button
-                        className="btn btn-sm btn-success"
+                        className="btn btn-primary w-100"
+                        onClick={handleTest}
+                        disabled={testing || tracerouting}
+                      >
+                        {testing ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            Testing...
+                          </>
+                        ) : (
+                          'Test Connection'
+                        )}
+                      </button>
+                    </div>
+                    <div className="col-md-3">
+                      <button
+                        className="btn btn-info w-100"
+                        onClick={handleDNSLookup}
+                        disabled={testing || tracerouting || dnsLoading || !isHostname(target)}
+                      >
+                        {dnsLoading ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            Looking up...
+                          </>
+                        ) : (
+                          '🔎 DNS Lookup'
+                        )}
+                      </button>
+                    </div>
+                    <div className="col-md-3">
+                      <button
+                        className="btn btn-success w-100"
                         onClick={handleTraceroute}
                         disabled={testing || tracerouting}
                       >
-                        {tracerouting ? 'Running...' : 'Run Traceroute'}
+                        {tracerouting ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            Running...
+                          </>
+                        ) : (
+                          '🔍 Traceroute'
+                        )}
+                      </button>
+                    </div>
+                    <div className="col-md-3">
+                      <button
+                        className="btn btn-secondary w-100"
+                        onClick={handleClear}
+                        disabled={testing || tracerouting}
+                      >
+                        Clear Results
                       </button>
                     </div>
                   </div>
-                  {tracerouteResult && (
-                    <div className="card-body p-0">
-                      <pre className="mb-0 p-3" style={{maxHeight: '300px', overflowY: 'auto'}}>{tracerouteResult}</pre>
-                    </div>
-                  )}
                 </div>
 
                 {error && (
@@ -370,9 +459,28 @@ function App() {
                   </div>
                 )}
 
-                {results.length > 0 && (
+                {(results.length > 0 || tracerouteResult || dnsResult) && (
                   <div>
-                    <h5>Test Results</h5>
+                    <h5 className="mb-3">Results</h5>
+
+                    {dnsResult && (
+                      <div className={`alert ${dnsResult.success ? 'alert-info' : 'alert-danger'}`} role="alert">
+                        <div className="mb-2">
+                          <strong>🔎 DNS Lookup for: {dnsResult.hostname}</strong>
+                        </div>
+                        {dnsResult.success ? (
+                          <div>
+                            <small className="d-block">Resolved addresses:</small>
+                            {dnsResult.addresses && dnsResult.addresses.map((addr, idx) => (
+                              <small key={idx} className="d-block font-monospace">{addr}</small>
+                            ))}
+                          </div>
+                        ) : (
+                          <small className="d-block">{dnsResult.message}</small>
+                        )}
+                      </div>
+                    )}
+
                     {results.map((result, index) => (
                       <div
                         key={index}
@@ -391,6 +499,13 @@ function App() {
                         <small className="d-block font-monospace">{result.message}</small>
                       </div>
                     ))}
+
+                    {tracerouteResult && (
+                      <div className="alert alert-secondary" role="alert">
+                        <strong>🔍 Traceroute Results</strong>
+                        <pre className="mb-0 mt-2 p-3" style={{maxHeight: '400px', overflowY: 'auto', backgroundColor: '#f8f9fa'}}>{tracerouteResult}</pre>
+                      </div>
+                    )}
                   </div>
                 )}
 

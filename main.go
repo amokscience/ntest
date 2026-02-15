@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -35,6 +37,17 @@ type TestResponse struct {
 	Results []TestResult `json:"results"`
 }
 
+type DNSRequest struct {
+	Hostname string `json:"hostname"`
+}
+
+type DNSResult struct {
+	Hostname  string   `json:"hostname"`
+	Addresses []string `json:"addresses"`
+	Success   bool     `json:"success"`
+	Message   string   `json:"message"`
+}
+
 type NetworkInterface struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
@@ -59,6 +72,7 @@ func main() {
 	mux.HandleFunc("/api/test", handleTest)
 	mux.HandleFunc("/api/test/stream", handleTestStream)
 	mux.HandleFunc("/api/traceroute", handleTraceroute)
+	mux.HandleFunc("/api/dns", handleDNS)
 	mux.HandleFunc("/api/sysinfo", handleSysInfo)
 	mux.HandleFunc("/api/health", handleHealth)
 
@@ -278,27 +292,103 @@ func handleTraceroute(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.Command("traceroute", "-m", "30", req.Target)
 	}
 
-	output, err := cmd.CombinedOutput()
+	// Create a pipe to capture output in real-time
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	cmd.Start()
 
-	var message string
-	var success bool
+	// Send initial message
+	fmt.Fprintf(w, "data: %s\n\n", `{"type":"start"}`)
+	flusher.Flush()
 
-	if err != nil {
-		message = fmt.Sprintf("Traceroute failed: %s", err.Error())
-		success = false
-	} else {
-		message = string(output)
-		success = true
+	// Read and stream output line by line
+	scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		// Send each line as it arrives
+		lineMsg := map[string]interface{}{
+			"type": "line",
+			"text": line,
+		}
+		data, _ := json.Marshal(lineMsg)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
 	}
 
-	// Send result
-	resultMsg := map[string]interface{}{
+	// Wait for command to complete
+	err := cmd.Wait()
+
+	var success bool
+	var message string
+	if err != nil {
+		success = false
+		message = fmt.Sprintf("Traceroute failed: %s", err.Error())
+	} else {
+		success = true
+		message = "Traceroute completed"
+	}
+
+	// Send completion message
+	completeMsg := map[string]interface{}{
+		"type":    "complete",
 		"success": success,
 		"message": message,
 	}
-	data, _ := json.Marshal(resultMsg)
+	data, _ := json.Marshal(completeMsg)
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
+}
+
+func handleDNS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req DNSRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate hostname
+	if req.Hostname == "" {
+		http.Error(w, "Hostname is required", http.StatusBadRequest)
+		return
+	}
+
+	// Perform DNS lookup
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use the default resolver with context timeout
+	var resolver net.Resolver
+	ips, err := resolver.LookupIPAddr(ctx, req.Hostname)
+
+	result := DNSResult{
+		Hostname: req.Hostname,
+	}
+
+	if err != nil {
+		result.Success = false
+		result.Message = fmt.Sprintf("DNS lookup failed: %s", err.Error())
+	} else if len(ips) == 0 {
+		result.Success = false
+		result.Message = "No addresses found"
+	} else {
+		result.Success = true
+		result.Addresses = make([]string, len(ips))
+		for i, ip := range ips {
+			result.Addresses[i] = ip.String()
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 func runTest(target, protocol, port string, timeoutSec int) TestResult {
