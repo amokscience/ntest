@@ -3,12 +3,12 @@ name: Docker Build & Push
 on:
   push:
     branches:
-      - main
+      - dev
     tags:
       - 'v*.*.*'
   pull_request:
     branches:
-      - main
+      - dev
 
 jobs:
   build-and-push:
@@ -49,14 +49,14 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' && (github.ref_type == 'tag' || github.ref == 'refs/heads/main') }}
+          push: ${{ github.event_name != 'pull_request' && (github.ref_type == 'tag' || github.ref == 'refs/heads/dev') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ntest:buildcache
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ntest:buildcache,mode=max
 
       - name: Update GitOps repo with new image tag
-        if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
         run: |
           git clone https://github.com/amokscience/argo-apps.git
           cd argo-apps
@@ -66,7 +66,8 @@ jobs:
           SHORT_SHA=${SHORT_SHA:0:7}
           
           # Update values-dev.yaml with new image tag (matches any quoted tag value)
-          sed -i "s/tag: \"[^\"]*\"/tag: \"main-${SHORT_SHA}\"/" ntest/helm/values-dev.yaml
+          sed -i "s/tag: \"[^\"]*\"/tag: \"dev-${SHORT_SHA}\"/" ntest/helm/values-dev.yaml
+          
           # Check if there are changes
           if git diff --quiet; then
             echo "No changes to commit"
@@ -77,6 +78,6 @@ jobs:
           git config user.email "bot@example.com"
           git config user.name "GitHub Actions Bot"
           git add ntest/helm/values-dev.yaml
-          git commit -m "Update main image tag to main-${SHORT_SHA}"
+          git commit -m "Update dev image tag to dev-${SHORT_SHA}"
           git remote set-url origin https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/amokscience/argo-apps.git
           git push origin HEAD:main
