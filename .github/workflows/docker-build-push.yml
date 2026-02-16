@@ -1,72 +1,71 @@
-name: Docker Build & Push
+name: Build and Push Docker Image
 
 on:
   push:
-    branches:
-      - dev
-    tags:
-      - 'v*.*.*'
-  pull_request:
-    branches:
-      - dev
+    branches: [ dev, qa, staging, prod ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+    
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to DockerHub
+      - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-        if: github.event_name != 'pull_request'
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/ntest
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
-            type=raw,value={{branch}}-latest
-            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Generate short SHA
+        id: short_sha
+        run: echo "sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      - name: Build and Push
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' && (github.ref_type == 'tag' || github.ref == 'refs/heads/dev') }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ntest:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ntest:buildcache,mode=max
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/ntest:${{ github.ref_name }}-latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/ntest:${{ github.ref_name }}-${{ steps.short_sha.outputs.sha }}
 
       - name: Update GitOps repo with new image tag
-        if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
         run: |
           git clone https://github.com/amokscience/argo-apps.git
           cd argo-apps
           
-          # Get short SHA (first 7 chars, matching DockerHub's display)
+          # Get short SHA
           SHORT_SHA=${{ github.sha }}
           SHORT_SHA=${SHORT_SHA:0:7}
           
-          # Update values-dev.yaml with new image tag (matches any quoted tag value)
-          sed -i "s/tag: \"[^\"]*\"/tag: \"dev-${SHORT_SHA}\"/" ntest/helm/values-dev.yaml
+          # Determine which values file to update based on branch
+          case "${{ github.ref_name }}" in
+            dev)
+              VALUES_FILE="ntest/helm/values-dev.yaml"
+              TAG_PREFIX="dev"
+              ;;
+            qa)
+              VALUES_FILE="ntest/helm/values-qa.yaml"
+              TAG_PREFIX="qa"
+              ;;
+            staging)
+              VALUES_FILE="ntest/helm/values-staging.yaml"
+              TAG_PREFIX="staging"
+              ;;
+            prod)
+              VALUES_FILE="ntest/helm/values-prod.yaml"
+              TAG_PREFIX="prod"
+              ;;
+          esac
+          
+          # Update values file with new image tag
+          sed -i "s/tag: \"${TAG_PREFIX}-.*/tag: \"${TAG_PREFIX}-${SHORT_SHA}\"/" $VALUES_FILE
           
           # Check if there are changes
           if git diff --quiet; then
@@ -77,7 +76,51 @@ jobs:
           # Commit and push
           git config user.email "bot@example.com"
           git config user.name "GitHub Actions Bot"
-          git add ntest/helm/values-dev.yaml
-          git commit -m "Update dev image tag to dev-${SHORT_SHA}"
+          git add $VALUES_FILE
+          git commit -m "Update ${TAG_PREFIX} image tag to ${TAG_PREFIX}-${SHORT_SHA}"
           git remote set-url origin https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/amokscience/argo-apps.git
           git push origin HEAD:main
+
+  promote:
+    needs: build
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure Git
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+
+      - name: Promote dev to qa
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          git fetch origin
+          git checkout qa
+          git merge origin/dev --no-ff -m "Auto-promote from dev after successful build"
+          git push origin qa
+        continue-on-error: true
+
+      - name: Promote qa to staging
+        if: github.ref == 'refs/heads/qa'
+        run: |
+          git fetch origin
+          git checkout staging
+          git merge origin/qa --no-ff -m "Auto-promote from qa after successful build"
+          git push origin staging
+        continue-on-error: true
+
+      - name: Promote staging to prod
+        if: github.ref == 'refs/heads/staging'
+        run: |
+          git fetch origin
+          git checkout prod
+          git merge origin/staging --no-ff -m "Auto-promote from staging after successful build"
+          git push origin prod
+        continue-on-error: true
