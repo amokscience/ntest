@@ -58,8 +58,8 @@ jobs:
       - name: Update GitOps repo with new image tag
         if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          git clone https://github.com/amokscience/gitops.git
-          cd gitops
+          git clone https://github.com/amokscience/argo-apps.git
+          cd argo-apps
           
           # Get short SHA (first 7 chars, matching DockerHub's display)
           SHORT_SHA=${{ github.sha }}
@@ -78,5 +78,5 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git add ntest/helm/values-dev.yaml
           git commit -m "Update main image tag to main-${SHORT_SHA}"
-          git remote set-url origin https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/amokscience/gitops.git
+          git remote set-url origin https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/amokscience/argo-apps.git
           git push origin HEAD:main
