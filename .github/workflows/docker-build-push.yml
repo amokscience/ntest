@@ -65,8 +65,8 @@ jobs:
           SHORT_SHA=${{ github.sha }}
           SHORT_SHA=${SHORT_SHA:0:7}
           
-          # Update values-dev.yaml with new image tag
-          sed -i "s/tag: \"main-.*/tag: \"main-${SHORT_SHA}\"/" ntest/helm/values-dev.yaml
+          # Update values-dev.yaml with new image tag (matches any quoted tag value)
+          sed -i "s/tag: \"[^\"]*\"/tag: \"main-${SHORT_SHA}\"/" ntest/helm/values-dev.yaml
           # Check if there are changes
           if git diff --quiet; then
             echo "No changes to commit"
