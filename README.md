@@ -76,7 +76,7 @@ That's it! Single executable serves both frontend and backend.
 1. **Build and start the containers**:
    ```bash
    docker-compose up --build
-   ```
+    ```
 
 2. **Access the application**:
    - Open your browser and navigate to: `http://localhost:3000`
