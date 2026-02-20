@@ -57,6 +57,13 @@ function App() {
     return () => clearInterval(timer);
   }, [API_URL]);
 
+  // Clear results when target changes
+  useEffect(() => {
+    setResults([]);
+    setTracerouteResult('');
+    setDnsResult(null);
+  }, [target]);
+
   const handleProtocolChange = (e) => {
     const newProtocol = e.target.value;
     setProtocol(newProtocol);
