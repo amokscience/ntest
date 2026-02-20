@@ -17,11 +17,13 @@ function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [dnsResult, setDnsResult] = useState(null);
   const [dnsLoading, setDnsLoading] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   // Use relative URL when embedded, or environment variable for development
   const API_URL = process.env.REACT_APP_API_URL || '';
 
-  // Fetch system info on component mount
+  // Fetch system info and load history on component mount
   useEffect(() => {
     const fetchSystemInfo = async () => {
       try {
@@ -34,6 +36,16 @@ function App() {
         console.error('Failed to fetch system info:', err);
       }
     };
+
+    // Load history from localStorage
+    const savedHistory = localStorage.getItem('targetHistory');
+    if (savedHistory) {
+      try {
+        setHistory(JSON.parse(savedHistory));
+      } catch (err) {
+        console.error('Failed to load history:', err);
+      }
+    }
 
     fetchSystemInfo();
 
@@ -52,6 +64,26 @@ function App() {
     if (newProtocol === 'ping') {
       setPort('');
     }
+  };
+
+  const addToHistory = (entry) => {
+    if (!entry.trim()) return;
+    
+    // Create new history with this entry at the front, removing duplicates
+    const newHistory = [entry, ...history.filter(item => item !== entry)].slice(0, 10);
+    setHistory(newHistory);
+    localStorage.setItem('targetHistory', JSON.stringify(newHistory));
+  };
+
+  const selectFromHistory = (entry) => {
+    setTarget(entry);
+    setShowHistory(false);
+  };
+
+  const removeFromHistory = (entry) => {
+    const newHistory = history.filter(item => item !== entry);
+    setHistory(newHistory);
+    localStorage.setItem('targetHistory', JSON.stringify(newHistory));
   };
 
   const handleTest = async () => {
@@ -104,6 +136,7 @@ function App() {
               setResults(prev => [...prev, data.result]);
               setCurrentTest('');
             } else if (data.type === 'complete') {
+              addToHistory(target);
               setTesting(false);
               setShowSuccess(true);
               setTimeout(() => setShowSuccess(false), 5000);
@@ -227,6 +260,14 @@ function App() {
     }
   };
 
+  const handleSetLocalIP = () => {
+    if (systemInfo && systemInfo.hostIps && systemInfo.hostIps.length > 0) {
+      // Prefer IPv4 over IPv6
+      const ipv4 = systemInfo.hostIps.find(ip => !ip.includes(':'));
+      setTarget(ipv4 || systemInfo.hostIps[0]);
+    }
+  };
+
   const handleClear = () => {
     setResults([]);
     setTracerouteResult('');
@@ -327,16 +368,54 @@ function App() {
 
                 <div className="mb-3">
                   <label htmlFor="target" className="form-label">Target IP or Domain</label>
-                  <input
-                    id="target"
-                    type="text"
-                    className="form-control"
-                    placeholder="e.g., google.com or 8.8.8.8"
-                    value={target}
-                    onChange={(e) => setTarget(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    disabled={testing}
-                  />
+                  <div className="position-relative">
+                    <div className="input-group">
+                      <input
+                        id="target"
+                        type="text"
+                        className="form-control"
+                        placeholder="e.g., google.com or 8.8.8.8"
+                        value={target}
+                        onChange={(e) => setTarget(e.target.value)}
+                        onKeyPress={handleKeyPress}
+                        onFocus={() => setShowHistory(true)}
+                        onBlur={() => setTimeout(() => setShowHistory(false), 200)}
+                        disabled={testing}
+                      />
+                      <button
+                        className="btn btn-outline-secondary"
+                        type="button"
+                        onClick={handleSetLocalIP}
+                        disabled={testing || !systemInfo || !systemInfo.hostIps || systemInfo.hostIps.length === 0}
+                        title="Set local IP address"
+                      >
+                        Local IP
+                      </button>
+                    </div>
+                    {showHistory && history.length > 0 && (
+                      <div className="list-group position-absolute w-100 mt-1" style={{zIndex: 10, maxHeight: '250px', overflowY: 'auto'}}>
+                        {history.map((entry, idx) => (
+                          <div key={idx} className="list-group-item list-group-item-action">
+                            <div className="d-flex justify-content-between align-items-center">
+                              <button
+                                type="button"
+                                className="btn btn-link p-0 text-start text-decoration-none flex-grow-1"
+                                onClick={() => selectFromHistory(entry)}
+                              >
+                                {entry}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-close"
+                                onClick={() => removeFromHistory(entry)}
+                                title="Remove from history"
+                              ></button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="row">
