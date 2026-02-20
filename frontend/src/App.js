@@ -400,14 +400,14 @@ function App() {
                               <button
                                 type="button"
                                 className="btn btn-link p-0 text-start text-decoration-none flex-grow-1"
-                                onClick={() => selectFromHistory(entry)}
+                                onMouseDown={() => selectFromHistory(entry)}
                               >
                                 {entry}
                               </button>
                               <button
                                 type="button"
                                 className="btn btn-sm btn-close"
-                                onClick={() => removeFromHistory(entry)}
+                                onMouseDown={() => removeFromHistory(entry)}
                                 title="Remove from history"
                               ></button>
                             </div>
